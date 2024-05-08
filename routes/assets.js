@@ -8,7 +8,7 @@ router.get('/', async (req, res) => {
         const assets = await mongoose.connection.db.collection('assets').find({}).toArray();
         const total = assets.length; // Calcula el total de documentos
 
-        // Obtener información del empleado asignado para cada activo
+        // Obtener información del empleado asignado y la ubicación para cada activo
         for (const asset of assets) {
             if (asset.assigned) {
                 const employee = await mongoose.connection.db.collection('employees').findOne({ _id: mongoose.Types.ObjectId(asset.assigned) });
@@ -18,7 +18,6 @@ router.get('/', async (req, res) => {
                     asset.employee_name = `${employee.name} ${employee.lastName}`;
                 }
             }
-            // Obtener información de la ubicación para cada activo
             if (asset.location) {
                 const location = await mongoose.connection.db.collection('locationsReal').findOne({ _id: mongoose.Types.ObjectId(asset.location) });
                 if (location) {
@@ -26,6 +25,22 @@ router.get('/', async (req, res) => {
                     asset.location_Name = location.name;
                     asset.location_Level = location.profileLevel;
                 }
+            }
+            // Realiza una consulta para obtener la última sesión que contenga el activo
+            const lastSession = await mongoose.connection.db.collection('inventorySessions').find({ "assets._id": asset._id }).sort({ creation: -1 }).limit(1).toArray();
+            if (lastSession.length > 0) {
+                // Asigna la última sesión encontrada
+                asset.lastSession = {
+                    sessionId: lastSession[0].sessionId,
+                    Status: lastSession[0].assets[0].status,
+                    UserAF: lastSession[0].appUser,
+                    SessionDate: lastSession[0].creation
+                };
+            } else {
+                // Si no se encuentra ninguna sesión, asigna valores predeterminados
+                asset.lastSession = {
+                    Status: "N/A",
+                };
             }
         }
 
@@ -56,7 +71,4 @@ router.get('/', async (req, res) => {
     }
 });
 
-
-
 module.exports = router;
-
