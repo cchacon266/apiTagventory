@@ -26,16 +26,22 @@ router.get('/', async (req, res) => {
                     asset.location_Level = location.profileLevel;
                 }
             }
+            
             // Realiza una consulta para obtener la última sesión que contenga el activo
             const lastSession = await mongoose.connection.db.collection('inventorySessions').find({ "assets._id": asset._id }).sort({ creation: -1 }).limit(1).toArray();
             if (lastSession.length > 0) {
-                // Asigna la última sesión encontrada
-                asset.lastSession = {
-                    sessionId: lastSession[0].sessionId,
-                    Status: lastSession[0].assets[0].status,
-                    UserAF: lastSession[0].appUser,
-                    SessionDate: lastSession[0].creation
-                };
+                // Encuentra el estado más reciente del activo dentro de la última sesión
+                const lastAsset = lastSession[0].assets.find(item => item._id.toString() === asset._id.toString());
+                if (lastAsset) {
+                    // Agrega el estado más reciente al objeto de activo
+                    asset.lastSession = {
+                        sessionId: lastSession[0]._id,
+                        Status: lastAsset.status,
+                        UserAF: lastSession[0].appUser,
+                        SessionDate: lastSession[0].creation
+                       
+                    };
+                }
             } else {
                 // Si no se encuentra ninguna sesión, asigna valores predeterminados
                 asset.lastSession = {
@@ -57,7 +63,7 @@ router.get('/', async (req, res) => {
                 method: 'GET',
                 total: total
             },
-            response: assets // Los documentos de la colección, ahora con los campos employee_id, employee_name, location_Name y location_Level agregados
+            response: assets // Los documentos de la colección, ahora con los campos employee_id, employee_name, location_Name, location_Level y Status agregados
         };
 
         // Convierte la respuesta a JSON con formato legible
