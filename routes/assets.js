@@ -26,7 +26,27 @@ router.get('/', async (req, res) => {
                     asset.location_Level = location.profileLevel;
                 }
             }
-            
+
+            // Modificar el formato del campo personalizado "SOC."
+            const customFieldsTab = asset.customFieldsTab;
+            for (const tabKey of Object.keys(customFieldsTab)) {
+                const tab = customFieldsTab[tabKey];
+                for (const field of tab.left) {
+                    if (field.values.fieldName === 'SOC.') {
+                        // Asignar el valor de "SOC." como un nuevo campo "soc"
+                        asset.soc = field.values.initialValue;
+                    }
+                  
+                    if (field.values.fieldName === 'STATUS') {
+                        // Asignar el valor de "STATUS" como un nuevo campo "Asset_Status"
+                        asset.Asset_Status = field.values.initialValue;
+                    }
+                }
+            }
+
+             // Eliminar el campo customFieldsTab
+             //delete asset.customFieldsTab;
+
             // Realiza una consulta para obtener la última sesión que contenga el activo
             const lastSession = await mongoose.connection.db.collection('inventorySessions').find({ "assets._id": asset._id }).sort({ creation: -1 }).limit(1).toArray();
             if (lastSession.length > 0) {
@@ -49,6 +69,7 @@ router.get('/', async (req, res) => {
                 };
             }
         }
+
 
         // Estructura la respuesta como se describe
         const response = {
