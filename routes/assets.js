@@ -25,7 +25,6 @@ router.get('/', async (req, res) => {
             updateDate: 1,
             assignedTo: 1,
             children: 1,
-            creator: 1
         };
         
         //obtener todos los documentos de la colección "assets"
@@ -56,16 +55,6 @@ router.get('/', async (req, res) => {
                 }
             }
 
-              // Agregar el campo creationUserFullName desde la colección users
-            if (asset.creator) {
-                const user = await mongoose.connection.db.collection('user').findOne(
-                    { _id: mongoose.Types.ObjectId(asset.creator) },
-                    { projection: { name: 1, lastName: 1 } }
-                );
-                if (user) {
-                    asset.creationUserFullName = `${user.name} ${user.lastName}`;
-                }
-            }
         
             // Procesar solo los campos necesarios del customFieldsTab
             const customFieldsTab = asset.customFieldsTab;
