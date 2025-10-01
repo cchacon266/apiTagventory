@@ -21,9 +21,15 @@ mongoose.connect(process.env.DB_URL, {
 // Middleware de compresión para reducir el tamaño de las respuestas
 app.use(compression());
 
-// Middleware para analizar JSON y urlencoded con límites optimizados
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Middleware para manejar timeouts y respuestas grandes
+app.use((req, res, next) => {
+    // Aumentar timeout para respuestas grandes
+    res.setTimeout(120000);
+    next();
+});
 
 // Headers de caché para optimizar rendimiento
 app.use((req, res, next) => {
