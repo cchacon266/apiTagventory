@@ -58,21 +58,4 @@ router.get('/', async (req, res) => {
     }
 });
 
-router.post('/clear-cache', (req, res) => {
-    try {
-        AssetsService.clearCache();
-
-        res.json({
-            message: 'Método de caché ejecutado (caché deshabilitado)',
-            timestamp: new Date().toISOString(),
-            status: 'Caché deshabilitado - método mantenido para compatibilidad'
-        });
-    } catch (error) {
-        res.status(500).json({
-            error: 'Error al ejecutar método de caché',
-            details: error.message
-        });
-    }
-});
-
 module.exports = router;
