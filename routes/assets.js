@@ -23,7 +23,7 @@ router.get('/', async (req, res) => {
         // Aplicar límite por defecto cuando no hay filtros
         const hasFilters = Object.values(filters).some(value => value !== undefined && value !== null && value !== '');
         if (!hasFilters && !pagination.limit) {
-            pagination.limit = 50;
+            pagination.limit = 10000;
         }
 
         const result = await AssetsService.getAllAssetsWithDetails(filters, pagination);

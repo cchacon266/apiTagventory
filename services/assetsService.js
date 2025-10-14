@@ -79,8 +79,8 @@ class AssetsServiceOptimized {
 
             // Configurar paginación con límite
             const page = parseInt(pagination.page) || 1;
-            const MAX_LIMIT = 100;
-            const limit = Math.min(parseInt(pagination.limit) || 50, MAX_LIMIT);
+            const MAX_LIMIT = 10000;
+            const limit = Math.min(parseInt(pagination.limit) || 10000, MAX_LIMIT);
             const skip = (page - 1) * limit;
 
             let assetsQuery = Assets.find(queryFilters, assetFields);
