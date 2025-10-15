@@ -7,8 +7,11 @@ const moment = require('moment');
 class AssetsServiceOptimized {
     /**
      * Obtiene todos los assets con paginación y filtros
+     * Optimizado para grandes volúmenes (50k+ registros)
      */
     static async getAllAssetsWithDetails(filters = {}, pagination = {}) {
+        const startTime = Date.now();
+
         try {
             // Buscar empleado si hay filtro por empleado
             let employeeObjectId = null;
@@ -77,54 +80,67 @@ class AssetsServiceOptimized {
                 queryFilters.assignedTo = { $regex: employeeName, $options: 'i' };
             }
 
-            // Configurar paginación con límite
+            // Configurar paginación - solo aplicar si se especifica
             const page = parseInt(pagination.page) || 1;
-            const MAX_LIMIT = 10000;
-            const limit = Math.min(parseInt(pagination.limit) || 10000, MAX_LIMIT);
-            const skip = (page - 1) * limit;
+            const MAX_LIMIT = 50000; // Aumentar límite máximo para SAP
+            const limit = pagination.limit ? Math.min(parseInt(pagination.limit), MAX_LIMIT) : null;
+            const skip = limit ? (page - 1) * limit : 0;
 
             let assetsQuery = Assets.find(queryFilters, assetFields);
 
-            if (!filters.employee && !filters.session) {
+            // Solo aplicar paginación si se especifica limit
+            if (limit) {
                 assetsQuery = assetsQuery.skip(skip).limit(limit);
-            } else if (filters.session) {
-                const filterRatio = 0.90;
-                const assetsNeeded = skip + limit;
-                const estimatedAssetsToFetch = Math.ceil(assetsNeeded / filterRatio);
-                const buffer = Math.ceil(estimatedAssetsToFetch * 0.1);
-                const totalToFetch = estimatedAssetsToFetch + buffer;
-
-                assetsQuery = assetsQuery.limit(totalToFetch);
-            } else {
-                const filterRatio = 0.90;
-                const assetsNeeded = skip + limit;
-                const estimatedAssetsToFetch = Math.ceil(assetsNeeded / filterRatio);
-                const buffer = Math.ceil(estimatedAssetsToFetch * 0.5);
-                const totalToFetch = estimatedAssetsToFetch + buffer;
-                assetsQuery = assetsQuery.skip(0).limit(totalToFetch);
             }
 
             let totalDocuments = await Assets.countDocuments(queryFilters);
+
             const assets = await assetsQuery.lean();
 
-            // Obtener IDs únicos de empleados y ubicaciones
-            const employeeIds = [...new Set(assets.filter(asset => asset.assigned).map(asset => asset.assigned))];
-            const locationIds = [...new Set(assets.filter(asset => asset.location).map(asset => asset.location))];
+            const employeeIds = new Set();
+            const locationIds = new Set();
 
-            if (employeeObjectId && !employeeIds.includes(employeeObjectId.toString())) {
-                employeeIds.push(employeeObjectId);
+            assets.forEach(asset => {
+                if (asset.assigned) employeeIds.add(asset.assigned);
+                if (asset.location) locationIds.add(asset.location);
+            });
+
+            // Convertir Sets a Arrays
+            const employeeIdsArray = Array.from(employeeIds);
+            const locationIdsArray = Array.from(locationIds);
+
+            if (employeeObjectId && !employeeIdsArray.includes(employeeObjectId.toString())) {
+                employeeIdsArray.push(employeeObjectId);
             }
 
-            const [employees, locations, sessions] = await Promise.all([
-                this.getEmployeesByIds(employeeIds),
-                this.getLocationsByIds(locationIds),
-                this.getAllInventorySessions()
-            ]);
+            // Cargar sesiones solo si se especifica 
+            const relatedStart = Date.now();
+            const promises = [
+                this.getEmployeesByIds(employeeIdsArray),
+                this.getLocationsByIds(locationIdsArray)
+            ];
+
+            // Cargar sesiones por defecto, omitir solo si:
+            // 1. El cliente específicamente dice session_data=false
+            const includeSessions = pagination.session_data !== 'false';
+
+            if (includeSessions) {
+                promises.push(this.getAllInventorySessions());
+            }
+
+            const results = await Promise.all(promises);
+            const employees = results[0];
+            const locations = results[1];
+            const sessions = includeSessions ? results[2] : [];
 
             // Crear mapas para acceso rápido
             const employeeMap = this.createEmployeeMap(employees);
             const locationMap = this.createLocationMap(locations);
-            const sessionMap = this.createSessionMap(sessions);
+            
+            // Usar mapa optimizado de sesiones para mejor performance
+            const sessionMap = includeSessions ? 
+                this.createOptimizedSessionMap(sessions) : 
+                {};
 
             // Procesar assets
             let processedAssets = assets.map(asset => {
@@ -153,7 +169,7 @@ class AssetsServiceOptimized {
             }
 
             // Ajustar total y paginación para filtros que se aplican después del procesamiento
-            if (filters.employee || filters.session) {
+            if ((filters.employee || filters.session) && limit) {
                 totalDocuments = processedAssets.length;
 
                 const startIndex = skip;
@@ -162,9 +178,9 @@ class AssetsServiceOptimized {
             }
 
             // Calcular información de paginación
-            const totalPages = Math.ceil(totalDocuments / limit);
-            const hasNextPage = page < totalPages;
-            const hasPrevPage = page > 1;
+            const totalPages = limit ? Math.ceil(totalDocuments / limit) : 1;
+            const hasNextPage = limit ? page < totalPages : false;
+            const hasPrevPage = limit ? page > 1 : false;
 
             const result = {
                 total: totalDocuments,
@@ -172,7 +188,7 @@ class AssetsServiceOptimized {
                 pagination: {
                     currentPage: page,
                     totalPages: totalPages,
-                    limit: limit,
+                    limit: limit || null,
                     hasNextPage: hasNextPage,
                     hasPrevPage: hasPrevPage,
                     nextPage: hasNextPage ? page + 1 : null,
@@ -180,6 +196,7 @@ class AssetsServiceOptimized {
                 }
             };
 
+            const totalTime = (Date.now() - startTime) / 1000;
             return result;
 
         } catch (error) {
@@ -242,7 +259,7 @@ class AssetsServiceOptimized {
     }
 
     /**
-     * Crea mapa de sesiones ordenadas por fecha
+     * Crea mapa de sesiones ordenadas por fecha (método original)
      */
     static createSessionMap(sessions) {
         const processedSessions = sessions.map(session => {
@@ -255,6 +272,38 @@ class AssetsServiceOptimized {
 
         processedSessions.sort((a, b) => b.creationDate - a.creationDate);
         return processedSessions;
+    }
+
+    /**
+     * Crea mapa de sesiones (assetId -> última sesión)
+     */
+    static createOptimizedSessionMap(sessions) {
+        const assetSessionMap = {};
+        
+        // Ordenar sesiones por fecha (más reciente primero)
+        const sortedSessions = sessions.sort((a, b) => 
+            moment(b.creation, 'DD/MM/YYYY HH:mm:ss').valueOf() - 
+            moment(a.creation, 'DD/MM/YYYY HH:mm:ss').valueOf()
+        );
+        
+        // Para cada sesión (de más reciente a más antigua)
+        sortedSessions.forEach(session => {
+            session.assets.forEach(asset => {
+                const assetId = asset._id.toString();
+                
+                // Solo guardar si es la primera vez que vemos este activo
+                if (!assetSessionMap[assetId]) {
+                    assetSessionMap[assetId] = {
+                        sessionId: session.sessionId,
+                        status: asset.status,
+                        user: session.appUser,
+                        date: session.creation
+                    };
+                }
+            });
+        });
+        
+        return assetSessionMap;
     }
 
     /**
@@ -278,8 +327,17 @@ class AssetsServiceOptimized {
         // Procesar campos personalizados
         this.processCustomFields(asset);
 
-        // Buscar última sesión
-        this.addLastSessionInfo(asset, sessionMap);
+        // Buscar última sesión (usar método optimizado si es mapa de activos)
+        if (Object.keys(sessionMap).length > 0 && sessionMap[asset._id.toString()]) {
+            // Es un mapa optimizado (assetId -> sesión)
+            this.addLastSessionInfoOptimized(asset, sessionMap);
+        } else if (Array.isArray(sessionMap)) {
+            // Es un array de sesiones (método original)
+            this.addLastSessionInfo(asset, sessionMap);
+        } else {
+            // Sin sesiones
+            asset.lastSession = { Status: "N/A" };
+        }
 
         return asset;
     }
@@ -306,7 +364,7 @@ class AssetsServiceOptimized {
     }
 
     /**
-     * Agrega información de la última sesión al asset
+     * Agrega información de la última sesión al asset (método original - lento)
      */
     static addLastSessionInfo(asset, sessionMap) {
         const lastSession = sessionMap.find(session =>
@@ -323,6 +381,26 @@ class AssetsServiceOptimized {
                     SessionDate: lastSession.creation
                 };
             }
+        } else {
+            asset.lastSession = {
+                Status: "N/A"
+            };
+        }
+    }
+
+    /**
+     * Agrega información de la última sesión al asset (método optimizado - rápido)
+     */
+    static addLastSessionInfoOptimized(asset, assetSessionMap) {
+        const lastSessionData = assetSessionMap[asset._id.toString()];
+        
+        if (lastSessionData) {
+            asset.lastSession = {
+                sessionId: lastSessionData.sessionId,
+                Status: lastSessionData.status,
+                UserAF: lastSessionData.user,
+                SessionDate: lastSessionData.date
+            };
         } else {
             asset.lastSession = {
                 Status: "N/A"
