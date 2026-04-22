@@ -6,22 +6,23 @@ const moment = require('moment');
 
 class AssetsServiceOptimized {
     /**
-     * Obtiene todos los assets con paginación y filtros
-     * Optimizado para grandes volúmenes (50k+ registros)
+     * Obtiene todos los assets con paginación y filtros.
+     * Soporta valores únicos (string) o múltiples (array) en cada filtro.
      */
     static async getAllAssetsWithDetails(filters = {}, pagination = {}) {
         const startTime = Date.now();
 
         try {
-            // Buscar empleado si hay filtro por empleado
-            let employeeObjectId = null;
-            let employeeData = null;
+            // Buscar empleados si hay filtro (acepta uno o varios IDs)
+            let employeeDataList = [];
             if (filters.employee) {
-                const employee = await Employee.findOne({ employee_id: filters.employee }).lean();
-                if (employee) {
-                    employeeObjectId = employee._id;
-                    employeeData = employee;
-                } else {
+                const employeeIds = Array.isArray(filters.employee)
+                    ? filters.employee
+                    : [filters.employee];
+                employeeDataList = await Employee.find(
+                    { employee_id: { $in: employeeIds } }
+                ).lean();
+                if (employeeDataList.length === 0) {
                     return {
                         platform: {
                             type: "api",
@@ -74,10 +75,16 @@ class AssetsServiceOptimized {
             // Construir filtros de consulta
             const queryFilters = this.buildQueryFilters(filters);
 
-            // Optimización para filtro por empleado
-            if (filters.employee && employeeData) {
-                const employeeName = `${employeeData.name} ${employeeData.lastName}`;
-                queryFilters.assignedTo = { $regex: employeeName, $options: 'i' };
+            // Pre-filtro por nombre de empleado en MongoDB para reducir el conjunto
+            if (filters.employee && employeeDataList.length > 0) {
+                const nameConditions = employeeDataList.map(e => ({
+                    assignedTo: { $regex: `${e.name} ${e.lastName}`, $options: 'i' }
+                }));
+                if (nameConditions.length === 1) {
+                    queryFilters.assignedTo = nameConditions[0].assignedTo;
+                } else {
+                    queryFilters.$or = nameConditions;
+                }
             }
 
             // Configurar paginación - solo aplicar si se especifica
@@ -109,9 +116,11 @@ class AssetsServiceOptimized {
             const employeeIdsArray = Array.from(employeeIds);
             const locationIdsArray = Array.from(locationIds);
 
-            if (employeeObjectId && !employeeIdsArray.includes(employeeObjectId.toString())) {
-                employeeIdsArray.push(employeeObjectId);
-            }
+            employeeDataList.forEach(emp => {
+                if (!employeeIdsArray.includes(emp._id.toString())) {
+                    employeeIdsArray.push(emp._id);
+                }
+            });
 
             // Cargar sesiones solo si se especifica 
             const relatedStart = Date.now();
@@ -409,90 +418,88 @@ class AssetsServiceOptimized {
     }
 
     /**
-     * Construye los filtros de consulta basados en los parámetros
+     * Construye los filtros de consulta basados en los parámetros.
+     * Cada campo acepta un valor único (string) o un array de valores.
      */
     static buildQueryFilters(filters) {
         const queryFilters = {};
 
         if (filters.location) {
-            queryFilters.locationPath = { $regex: `/${filters.location} ` };
-        }
-
-        if (filters.employee) {
-            // Filtro por empleado se aplicará después del procesamiento
+            const locations = Array.isArray(filters.location)
+                ? filters.location
+                : [filters.location];
+            // Genera un único regex con alternativas: /(1107|1108) 
+            const pattern = `/(${locations.map(l => l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')}) `;
+            queryFilters.locationPath = { $regex: pattern };
         }
 
         if (filters.EPC) {
-            queryFilters.EPC = filters.EPC;
+            const epcs = Array.isArray(filters.EPC) ? filters.EPC : [filters.EPC];
+            queryFilters.EPC = epcs.length === 1 ? epcs[0] : { $in: epcs };
         }
 
         if (filters.serial) {
-            queryFilters.serial = filters.serial;
+            const serials = Array.isArray(filters.serial) ? filters.serial : [filters.serial];
+            // Búsqueda parcial e insensible a mayúsculas para tolerar espacios y variaciones
+            const serialPatterns = serials.map(s => ({
+                serial: { $regex: s.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' }
+            }));
+            if (serialPatterns.length === 1) {
+                queryFilters.serial = serialPatterns[0].serial;
+            } else {
+                queryFilters.$or = [...(queryFilters.$or || []), ...serialPatterns];
+            }
         }
 
         if (filters.status) {
-            queryFilters.status = filters.status;
+            const statuses = Array.isArray(filters.status) ? filters.status : [filters.status];
+            queryFilters.status = statuses.length === 1 ? statuses[0] : { $in: statuses };
         }
 
-        if (filters.session) {
-            // El filtro por sesión se aplicará después del procesamiento
-            // porque lastSession se agrega durante el procesamiento
-        }
-
+        // employee y session se aplican después del procesamiento
         return queryFilters;
     }
 
-    /**
-     * Filtra assets por id del empleado
-     */
-    static filterByEmployeeId(assets, employeeId, employeeMap) {
+    /** Filtra assets por employee_id (acepta string o array) */
+    static filterByEmployeeId(assets, employeeId) {
         if (!employeeId) return assets;
-
-        const filtered = assets.filter(asset => {
-            return asset.employee_id === employeeId;
-        });
-
-        return filtered;
+        const ids = Array.isArray(employeeId) ? employeeId : [employeeId];
+        return assets.filter(asset => ids.includes(asset.employee_id));
     }
 
+    /** Filtra assets por EPC (acepta string o array) */
     static filterByEPC(assets, EPC) {
         if (!EPC) return assets;
-
-        const filtered = assets.filter(asset => {
-            return asset.EPC === EPC;
-        });
-
-        return filtered;
+        const epcs = Array.isArray(EPC) ? EPC : [EPC];
+        return assets.filter(asset => epcs.includes(asset.EPC));
     }
 
+    /** Filtra assets por serial con búsqueda parcial (acepta string o array) */
     static filterBySerial(assets, serial) {
         if (!serial) return assets;
-
-        const filtered = assets.filter(asset => {
-            return asset.serial === serial;
-        });
-
-        return filtered;
+        const serials = Array.isArray(serial) ? serial : [serial];
+        const patterns = serials.map(s => new RegExp(
+            s.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'
+        ));
+        return assets.filter(asset =>
+            asset.serial && patterns.some(re => re.test(asset.serial))
+        );
     }
 
+    /** Filtra assets por status (acepta string o array) */
     static filterByStatus(assets, status) {
         if (!status) return assets;
-
-        const filtered = assets.filter(asset => {
-            return asset.status === status;
-        });
-
-        return filtered;
+        const statuses = Array.isArray(status) ? status : [status];
+        return assets.filter(asset => statuses.includes(asset.status));
     }
 
+    /** Filtra assets por estado de sesión (acepta string o array) */
     static filterBySession(assets, session) {
         if (!session) return assets;
-
-        const filtered = assets.filter(asset => {
-            return asset.lastSession && asset.lastSession.Status === session;
-        });
-
-        return filtered;
+        const sessions = Array.isArray(session) ? session : [session];
+        return assets.filter(asset =>
+            asset.lastSession && sessions.includes(asset.lastSession.Status)
+        );
     }
 
 }
